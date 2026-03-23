@@ -214,9 +214,9 @@ loaded_model_std = Std_Model().to(device)
 
 # 2. Load the state dictionary from the file
 # Use map_location to ensure it loads correctly regardless of whether it was saved on GPU or CPU
-state_dict_shape = torch.load('model_shape_3.pth', map_location=device)
-state_dict_mean = torch.load('model_mean_3.pth', map_location=device)
-state_dict_std = torch.load('model_std_3.pth', map_location=device)
+state_dict_shape = torch.load('transmission_shape.pth', map_location=device)
+state_dict_mean = torch.load('transmission_mean.pth', map_location=device)
+state_dict_std = torch.load('transmission_std.pth', map_location=device)
 
 # 3. Load the weights into the model
 loaded_model_shape.load_state_dict(state_dict_shape)
