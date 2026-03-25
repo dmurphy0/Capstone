@@ -15,7 +15,7 @@ from petitRADTRANS.planet import Planet
 from sklearn.decomposition import PCA
 
 
-plt.rcParams.update({
+plt.rcParams.update({  #change fontsizes for presentation
     'font.size': 22,          # Global font size
     'axes.labelsize': 24,     # X and Y label size
     'axes.titlesize': 24,     # Title size
@@ -25,16 +25,16 @@ plt.rcParams.update({
 })
 
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu") #defines device as CPU or GPU.
 startTime = datetime.now()
 
 
-with h5py.File("emission_w_0.3_5.h5", "r") as f:  #calls data with RQMC sampling for training (2048 samples). Spans the sample space so better for training.
+with h5py.File("emission_w_0.3_5.h5", "r") as f: #calls the wavelength distributon for plotting spectra
     wl_timeseries=f['emission_wl_0.3_5'][:]
 wl_timeseries=wl_timeseries*1e4
 
 
-with h5py.File("Emission_RQMC_combined.h5", "r") as f:
+with h5py.File("Emission_RQMC_combined.h5", "r") as f:  #calls data with RQMC sampling for training (16384 samples)
     X_temp = f['emission_input'][:]
     y_temp = f['emission_flux'][:]
 
@@ -47,34 +47,30 @@ with h5py.File("real_emission.h5","r") as f:  #calls data for WASP-121b for test
 cols_to_log = [0,1,7]
 
 
-X_planet [cols_to_log] = np.log(X_planet[cols_to_log])  #log transform the features that are log distributed for better training. Only temp, gravity and radius ratio are log distributed.
+X_planet [cols_to_log] = np.log(X_planet[cols_to_log])  #log transform the features that should be log distributed in data-set 
 X_temp [:,cols_to_log] = np.log(X_temp[:, cols_to_log])
 
-print(X_temp[0][0],X_temp[1][0])
-
-print(np.shape(X_temp))
 
 y_temp = y_temp.reshape(16384,3843) #need to train in log normal space
-
 y_temp=y_temp[:,0:2814]
-
-y_copy = y_temp.copy()
-
-y_temp=np.log(y_temp)
-
+y_copy = y_temp.copy() #linear-space fluxes
+y_temp=np.log(y_temp)  #log-space fluxes
 
 y_planet = (y_planet.reshape(3843))  
-y_planet=y_planet[0:2814] 
-
+y_planet=y_planet[0:2814] #cut down to 0.3 to 5 microns
 
 flux_shape=y_temp
 
+
+#preprocess data using sklearn
 shape_scaler = StandardScaler()
 flux_shape = shape_scaler.fit_transform(flux_shape)
 
 preprocessor=MinMaxScaler() 
 X_temp=preprocessor.fit_transform(X_temp)   #normalises input features. RQMC isnt normally distributed by design, so can only really use MinMax Scaling. 
 
+
+#split data into training and validation data-sets
 X_train, X_val, flux_shape_train, flux_shape_val = train_test_split(
     X_temp,  
     flux_shape,   
@@ -84,7 +80,7 @@ X_train, X_val, flux_shape_train, flux_shape_val = train_test_split(
 
 ################################################################
 
-class LinearBlock(nn.Module):
+class LinearBlock(nn.Module):  #define linear blocks
     
     def __init__(self, in_features, out_features, dropout_rate=0.0, activation='leaky_relu'):
         super().__init__()
@@ -93,7 +89,7 @@ class LinearBlock(nn.Module):
         # Batch Norm is typically applied before activation
         layers.append(nn.BatchNorm1d(out_features))
 
-        if activation == 'gelu':
+        if activation == 'gelu':   #only use GELU here, but other activation functions are from previous iterations 
             layers.append(nn.GELU())
         elif activation == 'leaky_relu':
             # Negative slope 0.01 is standard; helps 'dead' neurons recover
@@ -101,7 +97,6 @@ class LinearBlock(nn.Module):
         elif activation == 'relu':
             layers.append(nn.ReLU())
         
-      
         if dropout_rate > 0:
             layers.append(nn.Dropout(dropout_rate))
             
@@ -111,8 +106,8 @@ class LinearBlock(nn.Module):
         return self.block(x)
 
 
-class ResBlock(nn.Module):
-    def __init__(self, features, dropout_rate=0.0):  #tried dropout=0.0???
+class ResBlock(nn.Module):  #define residual blocks
+    def __init__(self, features, dropout_rate=0.0):  
         super().__init__()
         self.block = nn.Sequential(
             nn.Linear(features, features),
@@ -128,11 +123,10 @@ class ResBlock(nn.Module):
         return (x + self.block(x)) # The skip connection
 
 
-class Shape_Model(nn.Module):
+class Shape_Model(nn.Module): #construct model from linear and residual blocks
     def __init__(self):
-        super().__init__() #try decrease the amount of noise          
+        super().__init__()       
         
-       
         self.input_layer = LinearBlock(9, 512, dropout_rate=0.0, activation='gelu')
         self.hidden = nn.Sequential(
             ResBlock(512),
@@ -140,7 +134,6 @@ class Shape_Model(nn.Module):
             ResBlock(512),
             ResBlock(512),
             ResBlock(512),
-            #ResBlock(512),
             LinearBlock(512,1024, dropout_rate=0.0, activation='gelu'),   
         )    
         self.output_layer = nn.Linear(1024, 2814)
@@ -151,26 +144,20 @@ class Shape_Model(nn.Module):
         x = self.hidden(x)
         return self.output_layer(x) #standard feedforward architecture. No residual connections here as it wouldnt be helpful with learning. We are trying to approximate a complex shape. 
       
-        #X_initial = self.input_layer(x)
-        #X_hidden = self.hidden(X_initial)
-        #return self.output_layer(X_initial + X_hidden)
-
-
-val_loss_plot=[]
+val_loss_plot=[] #use for epoch loss plots
 train_loss_plot=[]
 
-
-
+#train the model:
 def train_single_model(model, train_loader, val_loader, criterion, epochs, patience, model_name="Model"):   
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)   ###########################################################################################################################################################       
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)  #decrease learning rate after 3 epochs with no val_score decrease. Pushes further accuracy
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)   #ADAMW optimiser
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)  #decrease learning rate after 3 epochs with no val_loss decrease. Pushes further accuracy
     
     # Simple Early Stopping Logic Variables
     best_loss = float('inf')
     patience_counter = 0
     best_model_wts = copy.deepcopy(model.state_dict())
 
-    history = {'loss': [], 'val_loss': [], 'val_score':[]}
+    history = {'loss': [], 'val_loss': []}
 
     print(f"Starting training on {device}...")
 
@@ -203,14 +190,14 @@ def train_single_model(model, train_loader, val_loader, criterion, epochs, patie
         
         epoch_val_loss = val_running_loss / len(val_loader.dataset)
         
- 
-        #scheduler.step(epoch_val_loss)
+        #scheduler step
         scheduler.step(epoch_val_loss)
 
         # Record History
         history['loss'].append(epoch_loss)
         history['val_loss'].append(epoch_val_loss)
-       
+
+        #plot epoch loss data
         val_loss_plot.append(epoch_val_loss)
         train_loss_plot.append(epoch_loss)
 
@@ -228,8 +215,7 @@ def train_single_model(model, train_loader, val_loader, criterion, epochs, patie
                 print("Early stopping triggered.")
                 break
       
-
-    # Load best weights before returning
+    # Load best weights from training before returning
     model.load_state_dict(best_model_wts)
     
     return model, history
@@ -246,22 +232,13 @@ val_dataset_shape = TensorDataset(
 )
 
 
-
 #1 Shape
 train_loader_shape = DataLoader(train_dataset_shape, batch_size=256, shuffle=True)
-val_loader_shape = DataLoader(val_dataset_shape, batch_size=256, shuffle=False)   #cap bacth_size at 128. Not stochastic anymore if batch size >10% sample size
-#test_loader_shape=DataLoader(test_dataset_shape, batch_size=64, shuffle=False)
+val_loader_shape = DataLoader(val_dataset_shape, batch_size=256, shuffle=False)   #set bacth_size at 256. Smaller batch size makes process more stochastic. 
 
-model_shape = Shape_Model().to(device)
+model_shape = Shape_Model().to(device)  
 
-
-
-
- 
-
-
-
-class SpectralSmoothnessLoss(nn.Module):
+class SpectralSmoothnessLoss(nn.Module):  #custom loss function to maximise accuracy 
     def __init__(self, alpha=2, beta=1, delta=0.1):    
         super().__init__()
         self.alpha = alpha #Strength of the smoothness penalty
@@ -290,40 +267,16 @@ class SpectralSmoothnessLoss(nn.Module):
         # Total Loss
         return weighted_huber + (self.alpha * loss_smooth) + (self.beta * loss_curvature)
 
-
-
-
-
-        #return weighted_huber + (self.alpha*loss_smooth)
-
-
-
-
-    
-
-
-
-
-
 # Instantiate Model
 print("Training Shape Model...")
 model_shape, hist_shape = train_single_model(
     model_shape, train_loader_shape, val_loader_shape, 
-    criterion=SpectralSmoothnessLoss(), epochs=70, patience=10, model_name="Shape"
+    criterion=SpectralSmoothnessLoss(), epochs=70, patience=10, model_name="Shape"   #set maximum number of epochs, and early stopping patience
 )
-
 
 print('Total Duration: {}'.format(datetime.now() - startTime))
 
-torch.save(model_shape.state_dict(), 'emis_shape_11.pth')
-
-
-
-
-
-
-
-
+torch.save(model_shape.state_dict(), 'emis_shape_11.pth')  #saves model
 
 plt.plot(np.linspace(1,len(val_loss_plot), len(val_loss_plot)), val_loss_plot, label = 'Val_Loss', color='b', alpha=0.6)
 plt.plot(np.linspace(1,len(train_loss_plot), len(train_loss_plot)), train_loss_plot, label='Train_Loss', color = 'r')
@@ -332,8 +285,7 @@ plt.xlabel("Epoch")
 plt.ylabel("Loss (Standard Deviations)")
 plt.show()
 
-
-
+#prediction function
 def predict_combined(model_shape, data):
     model_shape.eval()
     
