@@ -15,7 +15,7 @@ from petitRADTRANS.planet import Planet
 from sklearn.decomposition import PCA
 
 
-plt.rcParams.update({
+plt.rcParams.update({  #change fontsizes for plt graphs
     'font.size': 22,          # Global font size
     'axes.labelsize': 24,     # X and Y label size
     'axes.titlesize': 24,     # Title size
@@ -25,16 +25,16 @@ plt.rcParams.update({
 })
 
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")  #defines whether device is CPU or GPU
 startTime = datetime.now()
 
 
-with h5py.File("emission_w_0.3_5.h5", "r") as f:  #calls data with RQMC sampling for training (2048 samples). Spans the sample space so better for training.
+with h5py.File("emission_w_0.3_5.h5", "r") as f:  #calls the wavelengths seperations for plotting
     wl_timeseries=f['emission_wl_0.3_5'][:]
 wl_timeseries=wl_timeseries*1e4
 
 
-with h5py.File("Emission_RQMC_combined.h5", "r") as f:
+with h5py.File("Emission_RQMC_combined.h5", "r") as f: #calls data with RQMC sampling for training (16384 samples)
     X_temp = f['emission_input'][:]
     y_temp = f['emission_flux'][:]
 
@@ -44,22 +44,15 @@ with h5py.File("real_emission.h5","r") as f:  #calls data for WASP-121b for test
     y_planet=f['real_emission_flux'][:]
 
 
+#format and scale all data:
+
 cols_to_log = [0,1,7]
-
-
-X_planet [cols_to_log] = np.log(X_planet[cols_to_log])  #log transform the features that are log distributed for better training. Only temp, gravity and radius ratio are log distributed.
+X_planet [cols_to_log] = np.log(X_planet[cols_to_log])  #log transform the features that are log distributed for better training. 
 X_temp [:,cols_to_log] = np.log(X_temp[:, cols_to_log])
 
-print(X_temp[0][0],X_temp[1][0])
-
-print(np.shape(X_temp))
-
 y_temp = y_temp.reshape(16384,3843) #need to train in log normal space
-
 y_temp=y_temp[:,0:2814]
-
 y_copy = y_temp.copy()
-
 y_temp=np.log(y_temp)
 
 
@@ -68,6 +61,7 @@ y_planet=y_planet[0:2814]
 
 flux_shape=y_temp
 
+#use sklearn to preprocess data for training
 
 shape_scaler = StandardScaler()
 flux_shape = shape_scaler.fit_transform(flux_shape)
@@ -75,7 +69,7 @@ flux_shape = shape_scaler.fit_transform(flux_shape)
 preprocessor=MinMaxScaler() 
 X_temp=preprocessor.fit_transform(X_temp)   #normalises input features. RQMC isnt normally distributed by design, so can only really use MinMax Scaling. 
 
-
+#split data into training and validation data-sets
 X_train, X_val, flux_shape_train, flux_shape_val = train_test_split(
     X_temp,  
     flux_shape,   
@@ -86,9 +80,7 @@ X_train, X_val, flux_shape_train, flux_shape_val = train_test_split(
 ################################################################
 
 
-
-
-class LinearBlock(nn.Module):
+class LinearBlock(nn.Module):  #defines what a linear block is
     
     def __init__(self, in_features, out_features, dropout_rate=0.0, activation='leaky_relu'):
         super().__init__()
@@ -105,7 +97,6 @@ class LinearBlock(nn.Module):
         elif activation == 'relu':
             layers.append(nn.ReLU())
         
-      
         if dropout_rate > 0:
             layers.append(nn.Dropout(dropout_rate))
             
@@ -115,8 +106,8 @@ class LinearBlock(nn.Module):
         return self.block(x)
 
 
-class ResBlock(nn.Module):
-    def __init__(self, features, dropout_rate=0.0):  #tried dropout=0.0???
+class ResBlock(nn.Module):   #define what a residual block is
+    def __init__(self, features, dropout_rate=0.0):  
         super().__init__()
         self.block = nn.Sequential(
             nn.Linear(features, features),
@@ -128,23 +119,21 @@ class ResBlock(nn.Module):
             nn.Dropout(dropout_rate), 
         )
         
-
     def forward(self, x):
         return (x + self.block(x)) # The skip connection
 
-class Shape_Model(nn.Module):
+
+class Shape_Model(nn.Module): #define our shape model, this is the only model for our emission emulator
     def __init__(self):
-        super().__init__() #try decrease the amount of noise          
+        super().__init__()      
         
-       
-        self.input_layer = LinearBlock(9, 512, dropout_rate=0.0, activation='gelu')
+        self.input_layer = LinearBlock(9, 512, dropout_rate=0.0, activation='gelu')  #construct it out of linear and residual blocks
         self.hidden = nn.Sequential(
             ResBlock(512),
             ResBlock(512),
             ResBlock(512),
             ResBlock(512),
             ResBlock(512),
-            #ResBlock(512),
             LinearBlock(512,1024, dropout_rate=0.0, activation='gelu'),   
         )    
         self.output_layer = nn.Linear(1024, 2814)
@@ -155,14 +144,9 @@ class Shape_Model(nn.Module):
         x = self.hidden(x)
         return self.output_layer(x) #standard feedforward architecture. No residual connections here as it wouldnt be helpful with learning. We are trying to approximate a complex shape. 
       
-        #X_initial = self.input_layer(x)
-        #X_hidden = self.hidden(X_initial)
-        #return self.output_layer(X_initial + X_hidden)
-
-
 
 # 1. Re-instantiate the model structure
-loaded_model_shape = Shape_Model().to(device)
+loaded_model_shape = Shape_Model().to(device)   #this loads the saved models from training, we must redefine our blocks and model so that it works.
 
 # 2. Load the state dictionary from the file
 # Use map_location to ensure it loads correctly regardless of whether it was saved on GPU or CPU
@@ -180,7 +164,7 @@ model_shape=loaded_model_shape
 
 
 
-def predict_combined(model_shape, data):
+def predict_combined(model_shape, data):  #define the prediction function based on model outputs
     model_shape.eval()
     
     if not torch.is_tensor(data):
@@ -195,16 +179,14 @@ def predict_combined(model_shape, data):
    
         final_prediction = np.exp(pred_shape)
 
-    return final_prediction, pred_shape  #final in norm units, else in log units
-    #return final_prediction
+    return final_prediction, pred_shape  #final prediction in linear-space units and log-space units respectively
 
 
-with h5py.File("emission_test_better.h5", "r") as f:  #calls data with RQMC sampling for training (2048 samples). Spans the sample space so better for training.
+with h5py.File("emission_test_better.h5", "r") as f:  #calls 1024 spectra for testing. These used normal sampling rather than RQMC to be more consistent with actual planetary data. 
     X_test=f['emission_input'][:]
     flux_test=f['emission_flux'][:]
 
 flux_test=flux_test.reshape(1024,2814)
-
 
 #log indices 0,1,7 already in dataset
 X_test=preprocessor.transform(X_test)
@@ -217,13 +199,11 @@ rmse = {'rescaled':[], 'shape': []}
 
 nrmse = {'rescaled':[], 'shape': []}
 
-#print(np.shape(rad_compare_std))
-for i in range(1024):
+
+for i in range(1024):  #calculate stats and analyse model predicitions on unseen test data. 
     pred=predict_combined(model_shape, X_test[i:i+1])
 
     preds_raw['rescaled'].append(pred[0][0].flatten())
-    #preds_raw['shape'].append(pred[1][0]*pred[3][0]) #scaled shape at mean=0
-
     preds_raw['shape'].append(pred[1][0]) #compare shape in log units  
    
 
@@ -249,7 +229,7 @@ print('RMSE - Shape:', np.min(rmse['shape']), np.max(rmse['shape']), np.mean(rms
 print('NRMSE - Rescaled:',np.min(nrmse['rescaled']), np.max(nrmse['rescaled']), np.mean(nrmse['rescaled']), np.median(nrmse['rescaled']))
 print('NRMSE - Shape:', np.min(nrmse['shape']), np.max(nrmse['shape']), np.mean(nrmse['shape']), np.median(nrmse['shape']))
 
-plt.hist(r2['shape'] , bins=100, label=r'$R^2$ Emission Model')
+plt.hist(r2['shape'] , bins=100, label=r'$R^2$ Emission Model')  #plot histograms of model analysis
 plt.title(r'$R^2$' ' Value Distribution in Log Space')
 plt.ylabel('Frequency')
 plt.xlabel(r'$R^2$')
@@ -264,7 +244,7 @@ plt.title(r'$R^2$' ' Value Distribution in Linear Space')
 plt.show()
 
 plt.hist(nrmse['shape'] , bins=100, label='Normalised RMSE Log Space')
-#plt.title('RMSE Value Distribution')
+plt.title('RMSE Value Distribution')
 plt.ylabel('Frequency')
 plt.xlabel(r'Difference [%] x$10^{-12}$')
 plt.grid(visible=True)
@@ -272,7 +252,7 @@ plt.legend()
 plt.show()  
 
 plt.hist(nrmse['rescaled'] , bins=100, label='Normalised RMSE Linear Space')
-#plt.title('RMSE Value Distribution')
+plt.title('RMSE Value Distribution')
 plt.ylabel('Frequency')
 plt.xlabel('Differenece [%]')
 plt.grid(visible=True)
@@ -280,8 +260,7 @@ plt.legend()
 plt.show()  
 
 
-print(np.argmin(r2['shape']), np.argmin(r2['rescaled']))
-
+print(np.argmin(r2['shape']), np.argmin(r2['rescaled'])) #analyse the worst performing predictions
 
 plt.plot(wl_timeseries, (predict_combined(model_shape, X_temp[np.argmin(r2['rescaled']):np.argmin(r2['rescaled'])+1]))[0][0], color='r', label= 'Prediction')
 plt.plot(wl_timeseries, y_copy[np.argmin(r2['rescaled'])], alpha = 0.6, color='b', label = 'Actual')
@@ -308,14 +287,9 @@ planet_real = preprocessor.transform(X_planet.reshape(1, -1))  #preprocess the r
 
 startTime2 = datetime.now()
 WASP_predict=(predict_combined(model_shape, planet_real[0:1]))[0]
-#WASP_predict=(predict_combined(model_shape, model_mean, model_std, planet_real[0:1]))[0]
 endTime2=datetime.now()
-print('Duration: {}'.format(endTime2 - startTime2)) 
+print('Duration: {}'.format(endTime2 - startTime2))   #this times the prediction of WASP-121b
    
-
-
-
-
 plt.title('WASP-121 b Emission Spectrum',fontsize=24)
 plt.plot(wl_timeseries, y_planet*1e-12, label='WASP-121 b', color='b')
 plt.xlabel('Wavelength [microns]')
@@ -327,7 +301,7 @@ plt.show()
 
 
 i=0
-#plt.suptitle('Predicted vs. Actual Emission Spectra')
+plt.suptitle('Predicted vs. Actual Emission Spectra')
 plt.subplot(2,2,1)
 plt.title('Test Planet 1')
 plt.plot(wl_timeseries, ((predict_combined(model_shape, X_test[i:i+1]))[0][0])*1e-12, color='r', label= 'Prediction')
