@@ -1,0 +1,1 @@
+Following the generation of datasets, the transmission model must first be trained in "transmission_train_model.py" . Training concludes with the creation of 3 .pth files for the shape, mean and standard deviaton (std) models. These are then called to generate predicitons in "transmisison_load_model.py". 
